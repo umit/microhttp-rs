@@ -1,0 +1,24 @@
+[package]
+name = "microhttp-rs"
+version = "0.1.0"
+edition = "2024"
+description = "A minimal HTTP parser library"
+license = "MIT"
+repository = "https://github.com/umit/microhttp-rs"
+documentation = "https://docs.rs/microhttp-rs"
+readme = "README.md"
+keywords = ["http", "parser", "web", "server", "protocol"]
+categories = ["web-programming", "network-programming", "parser-implementations"]
+
+# Library configuration
+[lib]
+name = "microhttp_rs"
+path = "src/lib.rs"
+
+[dependencies]
+# Only include the features we actually need
+tokio = { version = "1.36.0" }
+thiserror = { version = "2.0.12" }
+
+[dev-dependencies]
+tokio = { version = "1.36.0", features = ["full"] }
