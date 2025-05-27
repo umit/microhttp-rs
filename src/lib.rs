@@ -36,22 +36,26 @@
 //! ## Error handling
 //!
 //! ```
-//! use microhttp_rs::{parse_request, Error};
+//! use microhttp_rs::{parse_request, ParserError};
 //!
 //! let invalid_request = b"INVALID /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
 //!
 //! match parse_request(invalid_request) {
 //!     Ok(_) => println!("Request parsed successfully"),
-//!     Err(Error::InvalidMethod(method)) => println!("Invalid method: {}", method),
-//!     Err(Error::MalformedRequestLine(line)) => println!("Malformed request line: {}", line),
+//!     Err(ParserError::InvalidMethod(method)) => println!("Invalid method: {}", method),
+//!     Err(ParserError::MalformedRequestLine(line)) => println!("Malformed request line: {}", line),
 //!     Err(err) => println!("Other error: {}", err),
 //! }
 //! ```
 //!
 //! See the `examples` directory for more complete examples, including a simple HTTP server.
 
-// Re-export the parser module
+// Export the parser module
 pub mod parser;
 
+// Export the server module
+pub mod server;
+
 // Re-export commonly used items for convenience
-pub use parser::{Error, HttpRequest, HttpVersion, Method, parse_request};
+pub use parser::{Error as ParserError, HttpRequest, HttpVersion, Method, parse_request};
+pub use server::{Error as ServerError, HttpResponse, HttpServer, ServerConfig, StatusCode};

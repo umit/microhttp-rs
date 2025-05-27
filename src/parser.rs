@@ -159,7 +159,7 @@ impl FromStr for HttpVersion {
         match s {
             "HTTP/1.0" => Ok(HttpVersion::Http10),
             "HTTP/1.1" => Ok(HttpVersion::Http11),
-            "HTTP/2" => Ok(HttpVersion::Http20),
+            "HTTP/2" | "HTTP/2.0" => Ok(HttpVersion::Http20),
             _ => Err(Error::InvalidVersion(s.to_string())),
         }
     }

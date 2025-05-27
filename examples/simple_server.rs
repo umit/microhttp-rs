@@ -2,7 +2,7 @@
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use microhttp_rs::{parse_request, Error};
+use microhttp_rs::{parse_request, ParserError};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -50,13 +50,13 @@ async fn main() -> std::io::Result<()> {
 
                             // Generate an error response
                             let error_message = match err {
-                                Error::InvalidPath => "Invalid HTTP path".to_string(),
-                                Error::MissingHeader(header) => format!("Required header is missing: {}", header),
-                                Error::InvalidHeaderFormat => "Invalid header format".to_string(),
-                                Error::InvalidMethod(method) => format!("Invalid HTTP method: {}", method),
-                                Error::InvalidVersion(version) => format!("Invalid HTTP version: {}", version),
-                                Error::MalformedRequestLine(line) => format!("Malformed request line: {}", line),
-                                Error::EmptyRequest => "Empty request".to_string(),
+                                ParserError::InvalidPath => "Invalid HTTP path".to_string(),
+                                ParserError::MissingHeader(header) => format!("Required header is missing: {}", header),
+                                ParserError::InvalidHeaderFormat => "Invalid header format".to_string(),
+                                ParserError::InvalidMethod(method) => format!("Invalid HTTP method: {}", method),
+                                ParserError::InvalidVersion(version) => format!("Invalid HTTP version: {}", version),
+                                ParserError::MalformedRequestLine(line) => format!("Malformed request line: {}", line),
+                                ParserError::EmptyRequest => "Empty request".to_string(),
                             };
 
                             format!(
