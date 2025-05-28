@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use serde::Serialize;
 
 use crate::parser::{Error as ParserError, HttpRequest, Method};
 
@@ -103,6 +104,54 @@ impl HttpResponse {
         self.with_header("Content-Type", content_type)
     }
 
+    /// Set the response body with a JSON value.
+    ///
+    /// This method serializes the provided value to JSON and sets it as the response body.
+    /// It also sets the Content-Type header to "application/json".
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The type to serialize to JSON. Must implement `Serialize`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to serialize to JSON
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Self, Error>` - The updated response or an error
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use serde::Serialize;
+    /// use microhttp_rs::{HttpResponse, StatusCode};
+    ///
+    /// #[derive(Serialize)]
+    /// struct User {
+    ///     name: String,
+    ///     age: u32,
+    /// }
+    ///
+    /// let user = User {
+    ///     name: "John".to_string(),
+    ///     age: 30,
+    /// };
+    ///
+    /// let response = HttpResponse::new(StatusCode::Ok)
+    ///     .with_json(&user)
+    ///     .unwrap();
+    /// ```
+    pub fn with_json<T>(self, value: &T) -> Result<Self, Error>
+    where
+        T: Serialize,
+    {
+        let json = serde_json::to_vec(value)?;
+        Ok(self
+            .with_content_type("application/json")
+            .with_body_bytes(json))
+    }
+
     /// Convert the response to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut result = Vec::new();
@@ -153,6 +202,10 @@ pub enum Error {
     /// Internal server error.
     #[error("Internal server error: {0}")]
     InternalError(String),
+
+    /// Error serializing or deserializing JSON.
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 /// Type alias for a handler function.
@@ -339,6 +392,7 @@ impl HttpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn test_status_code_reason_phrase() {
@@ -417,6 +471,45 @@ mod tests {
         assert!(response_str.contains("Content-Length: 13\r\n"));
         assert!(response_str.contains("Server: microhttp-rs\r\n"));
         assert!(response_str.ends_with("\r\n\r\nHello, world!"));
+    }
+
+    #[test]
+    fn test_http_response_with_json() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct TestUser {
+            name: String,
+            age: u32,
+        }
+
+        let user = TestUser {
+            name: "Jane Doe".to_string(),
+            age: 25,
+        };
+
+        // Test with_json method
+        let response = HttpResponse::new(StatusCode::Ok)
+            .with_json(&user)
+            .unwrap();
+
+        // Verify content type is set to application/json
+        assert_eq!(
+            response.headers.get("Content-Type"),
+            Some(&"application/json".to_string())
+        );
+
+        // Verify the body contains the serialized JSON
+        let expected_json = serde_json::to_vec(&user).unwrap();
+        assert_eq!(response.body, expected_json);
+
+        // Verify the Content-Length header is set correctly
+        assert_eq!(
+            response.headers.get("Content-Length"),
+            Some(&expected_json.len().to_string())
+        );
+
+        // Deserialize the body back to verify it's valid JSON
+        let deserialized: TestUser = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(deserialized, user);
     }
 
     // Mock tests for HttpServer will be added in a separate test module

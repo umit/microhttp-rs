@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use thiserror::Error;
+use serde::de::DeserializeOwned;
 
 /// Represents an HTTP request with its components.
 ///
@@ -20,6 +21,9 @@ pub struct HttpRequest {
 
     /// A map of header names (lowercase) to their values
     pub headers: HashMap<String, String>,
+
+    /// The request body as bytes
+    pub body: Vec<u8>,
 }
 
 impl HttpRequest {
@@ -46,6 +50,36 @@ impl HttpRequest {
             path,
             version,
             headers,
+            body: Vec::new(),
+        }
+    }
+
+    /// Creates a new HTTP request with the given components including a body.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The HTTP method
+    /// * `path` - The request path
+    /// * `version` - The HTTP version
+    /// * `headers` - A map of headers
+    /// * `body` - The request body as bytes
+    ///
+    /// # Returns
+    ///
+    /// A new HttpRequest instance
+    pub fn with_body(
+        method: Method,
+        path: String,
+        version: HttpVersion,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            method,
+            path,
+            version,
+            headers,
+            body,
         }
     }
 
@@ -73,6 +107,59 @@ impl HttpRequest {
     /// true if the header exists, false otherwise
     pub fn has_header(&self, name: &str) -> bool {
         self.headers.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// Parse the request body as JSON.
+    ///
+    /// This method attempts to parse the request body as JSON and deserialize it
+    /// into the specified type. The request should have a Content-Type header
+    /// with a value of "application/json" for this to be semantically correct,
+    /// although this method will attempt to parse the body regardless of the
+    /// Content-Type header.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The type to deserialize the JSON into. Must implement `DeserializeOwned`.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<T, Error>` - The deserialized value or an error
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct User {
+    ///     name: String,
+    ///     age: u32,
+    /// }
+    ///
+    /// // Assuming `request` is an HttpRequest with a JSON body
+    /// // let user: User = request.json().unwrap();
+    /// ```
+    pub fn json<T>(&self) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
+        let json = serde_json::from_slice(&self.body)?;
+        Ok(json)
+    }
+
+    /// Check if the request has a JSON content type.
+    ///
+    /// This method checks if the Content-Type header is set to "application/json".
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - true if the Content-Type header is "application/json", false otherwise
+    pub fn is_json(&self) -> bool {
+        if let Some(content_type) = self.get_header("content-type") {
+            content_type.to_lowercase().contains("application/json")
+        } else {
+            false
+        }
     }
 }
 
@@ -118,6 +205,10 @@ pub enum Error {
     /// The request is empty.
     #[error("Empty request")]
     EmptyRequest,
+
+    /// Error parsing JSON.
+    #[error("JSON parsing error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 // Implement FromStr for Method
@@ -261,17 +352,40 @@ pub fn parse_request(input: &[u8]) -> Result<HttpRequest, Error> {
         return Err(Error::MissingHeader("Host".to_string()));
     }
 
+    // Extract the body if present
+    let body = if let Some(content_length) = headers.get("content-length") {
+        if let Ok(_) = content_length.parse::<usize>() {
+            // Find the body in the original input
+            if let Some(body_start) = input_str.find("\r\n\r\n") {
+                let body_start = body_start + 4; // Skip the double CRLF
+                if body_start < input_str.len() {
+                    input[body_start..].to_vec()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     Ok(HttpRequest {
         method,
         path,
         version,
         headers,
+        body,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn test_parse_simple_get_request() {
@@ -564,6 +678,49 @@ mod tests {
         assert!(req.has_header("HOST"));
         assert!(req.has_header("Content-Type"));
         assert!(!req.has_header("nonexistent"));
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct TestUser {
+        name: String,
+        age: u32,
+    }
+
+    #[test]
+    fn test_json_parsing() {
+        // Create a request with a JSON body
+        let json_body = r#"{"name":"John Doe","age":30}"#.as_bytes();
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        headers.insert("content-length".to_string(), json_body.len().to_string());
+
+        let mut req = HttpRequest::new(
+            Method::POST,
+            "/api/users".to_string(),
+            HttpVersion::Http11,
+            headers,
+        );
+        req.body = json_body.to_vec();
+
+        // Test JSON parsing
+        let user: TestUser = req.json().unwrap();
+        assert_eq!(user.name, "John Doe");
+        assert_eq!(user.age, 30);
+
+        // Test is_json method
+        assert!(req.is_json());
+
+        // Test with invalid JSON
+        let mut invalid_req = HttpRequest::new(
+            Method::POST,
+            "/api/users".to_string(),
+            HttpVersion::Http11,
+            HashMap::new(),
+        );
+        invalid_req.body = b"{invalid-json}".to_vec();
+
+        let result: Result<TestUser, _> = invalid_req.json();
+        assert!(result.is_err());
     }
 
     #[test]

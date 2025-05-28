@@ -6,9 +6,9 @@ use microhttp_rs::{parse_request, ParserError};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // Bind to localhost:8081
-    let listener = TcpListener::bind("127.0.0.1:8081").await?;
-    println!("Server listening on http://127.0.0.1:8081");
+    // Bind to localhost:8082
+    let listener = TcpListener::bind("127.0.0.1:8082").await?;
+    println!("Server listening on http://127.0.0.1:8082");
 
     loop {
         // Accept incoming connections
@@ -57,6 +57,7 @@ async fn main() -> std::io::Result<()> {
                                 ParserError::InvalidVersion(version) => format!("Invalid HTTP version: {}", version),
                                 ParserError::MalformedRequestLine(line) => format!("Malformed request line: {}", line),
                                 ParserError::EmptyRequest => "Empty request".to_string(),
+                                ParserError::JsonError(e) => format!("JSON parsing error: {}", e),
                             };
 
                             format!(

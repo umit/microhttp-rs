@@ -8,8 +8,9 @@
 //! - Parse HTTP requests from byte slices
 //! - Support for common HTTP methods (GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH)
 //! - Support for HTTP versions 1.0, 1.1, and 2.0
+//! - JSON serialization and deserialization for request and response bodies
 //! - Proper error handling with descriptive error messages
-//! - No external dependencies for the core parsing functionality
+//! - Simple HTTP server implementation with routing and async handlers
 //!
 //! # Examples
 //!
@@ -46,6 +47,37 @@
 //!     Err(ParserError::MalformedRequestLine(line)) => println!("Malformed request line: {}", line),
 //!     Err(err) => println!("Other error: {}", err),
 //! }
+//! ```
+//!
+//! ## JSON support
+//!
+//! ```
+//! use microhttp_rs::{HttpResponse, StatusCode};
+//! use serde::{Deserialize, Serialize};
+//!
+//! // Define a data structure for JSON
+//! #[derive(Serialize, Deserialize)]
+//! struct User {
+//!     name: String,
+//!     email: String,
+//! }
+//!
+//! // Create a response with JSON body
+//! let user = User {
+//!     name: "John Doe".to_string(),
+//!     email: "john@example.com".to_string(),
+//! };
+//!
+//! let response = HttpResponse::new(StatusCode::Ok)
+//!     .with_json(&user)
+//!     .unwrap();
+//!
+//! // Parse JSON from a request
+//! // Assuming `request` is an HttpRequest with a JSON body
+//! // if request.is_json() {
+//! //     let user: User = request.json().unwrap();
+//! //     println!("User name: {}", user.name);
+//! // }
 //! ```
 //!
 //! See the `examples` directory for more complete examples, including a simple HTTP server.

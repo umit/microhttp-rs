@@ -3,12 +3,13 @@
 use microhttp_rs::{
     HttpResponse, HttpServer, Method, ServerConfig, StatusCode, ServerError
 };
+use serde::{Deserialize, Serialize};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a server configuration
     let config = ServerConfig {
-        addr: "127.0.0.1:8080".parse()?,
+        addr: "127.0.0.1:8083".parse()?,
         max_connections: 1024,
         read_buffer_size: 8192,
     };
@@ -51,26 +52,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_body_string(format!("Hello, {}!", name)))
     }).await;
 
-    // 3. Route that handles multiple HTTP methods
+    // Define data structures for JSON
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Message {
+        message: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct User {
+        name: String,
+        email: String,
+        age: Option<u32>,
+    }
+
+    // 3. Route that handles multiple HTTP methods with JSON
     server.add_route("/api/data", vec![Method::GET, Method::POST], |req| async move {
         match req.method {
             Method::GET => {
-                // Return some data
-                Ok(HttpResponse::new(StatusCode::Ok)
-                    .with_content_type("application/json")
-                    .with_body_string(r#"{"message": "This is GET data"}"#))
+                // Return some data as JSON
+                let data = Message {
+                    message: "This is GET data".to_string(),
+                };
+
+                HttpResponse::new(StatusCode::Ok)
+                    .with_json(&data)
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
             },
             Method::POST => {
                 // Process the request and return a response
-                Ok(HttpResponse::new(StatusCode::Created)
-                    .with_content_type("application/json")
-                    .with_body_string(r#"{"message": "Data created successfully"}"#))
+                let data = Message {
+                    message: "Data created successfully".to_string(),
+                };
+
+                HttpResponse::new(StatusCode::Created)
+                    .with_json(&data)
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
             },
             _ => Err(ServerError::InternalError("Unexpected method".to_string())),
         }
     }).await;
 
-    // 4. Route that returns different status codes
+    // 4. Route that demonstrates JSON request parsing
+    server.add_route("/api/users", vec![Method::POST], |req| async move {
+        // Check if the request is JSON
+        if !req.is_json() {
+            return Ok(HttpResponse::new(StatusCode::BadRequest)
+                .with_content_type("text/plain")
+                .with_body_string("Content-Type must be application/json"));
+        }
+
+        // Parse the JSON body
+        match req.json::<User>() {
+            Ok(user) => {
+                // Create a response with the user data
+                let response = Message {
+                    message: format!("User {} created successfully", user.name),
+                };
+
+                HttpResponse::new(StatusCode::Created)
+                    .with_json(&response)
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
+            },
+            Err(e) => {
+                Ok(HttpResponse::new(StatusCode::BadRequest)
+                    .with_content_type("text/plain")
+                    .with_body_string(format!("Invalid JSON: {}", e)))
+            }
+        }
+    }).await;
+
+    // 5. Route that returns different status codes
     server.add_route("/status", vec![Method::GET], |req| async move {
         // Get the 'code' query parameter if it exists
         let status_code = if let Some(query) = req.path.split_once('?') {
@@ -103,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_body_string(format!("Status: {}", status_code as u16)))
     }).await;
 
-    // 5. Route that demonstrates headers
+    // 6. Route that demonstrates headers
     server.add_route("/headers", vec![Method::GET], |req| async move {
         let mut response_body = String::from("Request Headers:\n\n");
 
@@ -122,9 +173,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /hello");
     println!("  GET  /api/data");
     println!("  POST /api/data");
+    println!("  POST /api/users");
     println!("  GET  /status");
     println!("  GET  /headers");
-    println!("\nStarting server on http://127.0.0.1:8080");
+    println!("\nStarting server on http://127.0.0.1:8083");
 
     // Start the server
     server.start().await?;
