@@ -285,14 +285,34 @@ impl HttpServer {
         let listener = TcpListener::bind(&self.config.addr).await?;
         println!("Server listening on http://{}", self.config.addr);
 
+        // Create a semaphore to limit concurrent connections
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
+
         loop {
             let (mut socket, addr) = listener.accept().await?;
             println!("Connection from: {}", addr);
+
+            // Try to acquire a permit from the semaphore
+            let permit = match semaphore.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    println!("Connection limit reached, rejecting connection from {}", addr);
+                    // Send a 503 Service Unavailable response
+                    let response = HttpResponse::new(StatusCode::ServiceUnavailable)
+                        .with_content_type("text/plain")
+                        .with_body_string("Server is at capacity, please try again later");
+                    let _ = socket.write_all(&response.to_bytes()).await;
+                    continue;
+                }
+            };
 
             let routes = self.routes.clone();
             let read_buffer_size = self.config.read_buffer_size;
 
             tokio::spawn(async move {
+                // The permit is dropped when the task completes, releasing the semaphore slot
+                let _permit = permit;
+
                 if let Err(e) = Self::handle_connection(&mut socket, routes, read_buffer_size).await {
                     eprintln!("Error handling connection: {}", e);
                 }
@@ -393,12 +413,125 @@ impl HttpServer {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Semaphore;
 
     #[test]
     fn test_status_code_reason_phrase() {
         assert_eq!(StatusCode::Ok.reason_phrase(), "OK");
         assert_eq!(StatusCode::NotFound.reason_phrase(), "Not Found");
         assert_eq!(StatusCode::InternalServerError.reason_phrase(), "Internal Server Error");
+    }
+
+    #[tokio::test]
+    async fn test_connection_limiting() {
+        // Create a semaphore with a small limit
+        let max_connections = 2;
+        let semaphore = Arc::new(Semaphore::new(max_connections));
+        let active_connections = Arc::new(AtomicUsize::new(0));
+
+        // Create a mock function that simulates handling a connection
+        async fn handle_connection(
+            semaphore: Arc<Semaphore>,
+            active_connections: Arc<AtomicUsize>,
+            connection_id: usize,
+        ) -> Result<(), String> {
+            // Try to acquire a permit
+            let permit = match semaphore.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    return Err(format!("Connection {} rejected: limit reached", connection_id));
+                }
+            };
+
+            // Increment active connections counter
+            let count = active_connections.fetch_add(1, Ordering::SeqCst) + 1;
+            println!("Connection {} accepted. Active connections: {}", connection_id, count);
+
+            // Simulate some work
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+            // Decrement active connections counter (permit is dropped when this function returns)
+            let count = active_connections.fetch_sub(1, Ordering::SeqCst) - 1;
+            println!("Connection {} completed. Active connections: {}", connection_id, count);
+
+            // The permit is dropped here, releasing the semaphore slot
+            drop(permit);
+
+            Ok(())
+        }
+
+        // Spawn multiple concurrent connections
+        let mut handles = vec![];
+        let mut results = vec![];
+
+        // First, spawn max_connections tasks that should succeed
+        for i in 0..max_connections {
+            let semaphore_clone = semaphore.clone();
+            let active_clone = active_connections.clone();
+            let handle = tokio::spawn(async move {
+                handle_connection(semaphore_clone, active_clone, i).await
+            });
+            handles.push(handle);
+        }
+
+        // Wait a bit to ensure the first connections are being processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+
+        // Now spawn one more connection that should be rejected
+        let semaphore_clone = semaphore.clone();
+        let active_clone = active_connections.clone();
+        let reject_handle = tokio::spawn(async move {
+            handle_connection(semaphore_clone, active_clone, max_connections).await
+        });
+
+        // Wait for all connections to complete
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
+
+        // Check the result of the connection that should be rejected
+        let reject_result = reject_handle.await.unwrap();
+
+        // Verify that all initial connections succeeded
+        for (i, result) in results.iter().enumerate() {
+            assert!(result.is_ok(), "Connection {} should have succeeded", i);
+        }
+
+        // Verify that the extra connection was rejected
+        assert!(reject_result.is_err(), "Connection {} should have been rejected", max_connections);
+        assert!(reject_result.unwrap_err().contains("limit reached"), 
+                "Rejection message should indicate limit reached");
+
+        // Verify that no active connections remain
+        assert_eq!(active_connections.load(Ordering::SeqCst), 0, 
+                   "All connections should be completed");
+    }
+
+    #[tokio::test]
+    async fn test_server_config_max_connections() {
+        // Create a server configuration with a custom max_connections value
+        let custom_max_connections = 42;
+        let config = ServerConfig {
+            addr: "127.0.0.1:8080".parse().unwrap(),
+            max_connections: custom_max_connections,
+            read_buffer_size: 4096,
+        };
+
+        // Create a server with the custom configuration
+        let server = HttpServer::new(config);
+
+        // Verify that the server's config has the correct max_connections value
+        assert_eq!(server.config.max_connections, custom_max_connections);
+
+        // Create a different server with the default configuration
+        let default_server = HttpServer::new(ServerConfig::default());
+
+        // Verify that the default server's config has the default max_connections value
+        assert_eq!(default_server.config.max_connections, 1024);
+
+        // Verify that the two servers have different max_connections values
+        assert_ne!(server.config.max_connections, default_server.config.max_connections);
     }
 
     #[test]
