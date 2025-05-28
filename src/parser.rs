@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 /// Represents an HTTP request with its components.
 ///
 /// This struct contains all the parsed components of an HTTP request, including
-/// the method, path, HTTP version, and headers.
+/// the method, path, HTTP version, headers, and query parameters.
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
     /// The HTTP method of the request (GET, POST, etc.)
@@ -21,6 +21,9 @@ pub struct HttpRequest {
 
     /// A map of header names (lowercase) to their values
     pub headers: HashMap<String, String>,
+
+    /// A map of query parameter names to their values
+    pub query_params: HashMap<String, String>,
 
     /// The request body as bytes
     pub body: Vec<u8>,
@@ -50,6 +53,7 @@ impl HttpRequest {
             path,
             version,
             headers,
+            query_params: HashMap::new(),
             body: Vec::new(),
         }
     }
@@ -79,6 +83,7 @@ impl HttpRequest {
             path,
             version,
             headers,
+            query_params: HashMap::new(),
             body,
         }
     }
@@ -160,6 +165,32 @@ impl HttpRequest {
         } else {
             false
         }
+    }
+
+    /// Gets a query parameter value by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The query parameter name
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the query parameter value if it exists
+    pub fn get_query_param(&self, name: &str) -> Option<&String> {
+        self.query_params.get(name)
+    }
+
+    /// Checks if the request has a specific query parameter.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The query parameter name
+    ///
+    /// # Returns
+    ///
+    /// true if the query parameter exists, false otherwise
+    pub fn has_query_param(&self, name: &str) -> bool {
+        self.query_params.contains_key(name)
     }
 }
 
@@ -320,8 +351,18 @@ pub fn parse_request(input: &[u8]) -> Result<HttpRequest, Error> {
         .parse()
         .map_err(|_| Error::InvalidMethod(parts[0].to_string()))?;
 
-    // Parse path
+    // Parse path and query parameters
     let path = parts[1].to_string();
+
+    // Extract query parameters if present
+    let mut query_params = HashMap::new();
+    if let Some((_, query_string)) = path.split_once('?') {
+        for param in query_string.split('&') {
+            if let Some((key, value)) = param.split_once('=') {
+                query_params.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
 
     // Parse version
     let version = parts[2]
@@ -378,6 +419,7 @@ pub fn parse_request(input: &[u8]) -> Result<HttpRequest, Error> {
         path,
         version,
         headers,
+        query_params,
         body,
     })
 }
@@ -607,7 +649,51 @@ mod tests {
         let input = b"GET /search?q=rust&page=1 HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let req = parse_request(input).unwrap();
 
+        // Verify the full path is preserved
         assert_eq!(req.path, "/search?q=rust&page=1");
+
+        // Verify query parameters are parsed correctly
+        assert_eq!(req.query_params.len(), 2);
+        assert_eq!(req.get_query_param("q"), Some(&"rust".to_string()));
+        assert_eq!(req.get_query_param("page"), Some(&"1".to_string()));
+
+        // Verify has_query_param works
+        assert!(req.has_query_param("q"));
+        assert!(req.has_query_param("page"));
+        assert!(!req.has_query_param("nonexistent"));
+
+        // Verify get_query_param returns None for nonexistent parameters
+        assert_eq!(req.get_query_param("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_complex_query_parameters() {
+        // Test with empty query parameter value
+        let input = b"GET /search?q=&empty HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let req = parse_request(input).unwrap();
+
+        assert_eq!(req.path, "/search?q=&empty");
+        assert_eq!(req.get_query_param("q"), Some(&"".to_string()));
+        assert!(req.has_query_param("q"));
+
+        // Test with query parameter without value (not captured in current implementation)
+        // In the current implementation, "empty" is not captured because it doesn't have an equals sign
+        assert_eq!(req.get_query_param("empty"), None);
+
+        // Test with multiple query parameters with the same name (last one wins)
+        let input = b"GET /search?q=first&q=second HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let req = parse_request(input).unwrap();
+
+        assert_eq!(req.path, "/search?q=first&q=second");
+        assert_eq!(req.get_query_param("q"), Some(&"second".to_string()));
+
+        // Test with URL-encoded query parameters
+        let input = b"GET /search?q=hello%20world&tag=rust%2Bprogramming HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let req = parse_request(input).unwrap();
+
+        assert_eq!(req.path, "/search?q=hello%20world&tag=rust%2Bprogramming");
+        assert_eq!(req.get_query_param("q"), Some(&"hello%20world".to_string()));
+        assert_eq!(req.get_query_param("tag"), Some(&"rust%2Bprogramming".to_string()));
     }
 
     #[test]

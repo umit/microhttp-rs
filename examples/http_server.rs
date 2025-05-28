@@ -29,23 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Route with path parameter
     server.add_route("/hello", vec![Method::GET], |req| async move {
         // Get the 'name' query parameter if it exists
-        let name = if let Some(query) = req.path.split_once('?') {
-            if let Some(name_param) = query.1.split('&')
-                .find_map(|param| {
-                    let parts: Vec<&str> = param.split('=').collect();
-                    if parts.len() == 2 && parts[0] == "name" {
-                        Some(parts[1])
-                    } else {
-                        None
-                    }
-                }) {
-                name_param
-            } else {
-                "World"
-            }
-        } else {
-            "World"
-        };
+        let name = req.get_query_param("name").map_or("World", |s| s.as_str());
 
         Ok(HttpResponse::new(StatusCode::Ok)
             .with_content_type("text/plain")
@@ -124,29 +108,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Route that returns different status codes
     server.add_route("/status", vec![Method::GET], |req| async move {
         // Get the 'code' query parameter if it exists
-        let status_code = if let Some(query) = req.path.split_once('?') {
-            if let Some(code_str) = query.1.split('&')
-                .find_map(|param| {
-                    let parts: Vec<&str> = param.split('=').collect();
-                    if parts.len() == 2 && parts[0] == "code" {
-                        Some(parts[1])
-                    } else {
-                        None
-                    }
-                }) {
-                match code_str {
-                    "200" => StatusCode::Ok,
-                    "201" => StatusCode::Created,
-                    "400" => StatusCode::BadRequest,
-                    "404" => StatusCode::NotFound,
-                    "500" => StatusCode::InternalServerError,
-                    _ => StatusCode::Ok,
-                }
-            } else {
-                StatusCode::Ok
-            }
-        } else {
-            StatusCode::Ok
+        let status_code = match req.get_query_param("code").map(|s| s.as_str()) {
+            Some("200") => StatusCode::Ok,
+            Some("201") => StatusCode::Created,
+            Some("400") => StatusCode::BadRequest,
+            Some("404") => StatusCode::NotFound,
+            Some("500") => StatusCode::InternalServerError,
+            _ => StatusCode::Ok,
         };
 
         Ok(HttpResponse::new(status_code)
