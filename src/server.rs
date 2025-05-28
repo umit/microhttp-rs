@@ -511,6 +511,4 @@ mod tests {
         let deserialized: TestUser = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(deserialized, user);
     }
-
-    // Mock tests for HttpServer will be added in a separate test module
 }
