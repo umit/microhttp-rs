@@ -286,8 +286,8 @@ impl HttpServer {
         self.routes.write().await.push(route);
     }
 
-    /// Start the server and listen for incoming connections.
-    pub async fn start(&self) -> Result<(), Error> {
+    /// Display the server banner and registered endpoints.
+    async fn display_server_info(&self) -> Result<(), Error> {
         // Display the banner
         let banner = include_str!("banner.txt");
         info!("\n{}", banner);
@@ -303,20 +303,18 @@ impl HttpServer {
             info!("  {} {}", methods, route.path);
         }
 
+        Ok(())
+    }
+
+    /// Set up the TCP listener.
+    async fn setup_listener(&self) -> Result<TcpListener, Error> {
         let listener = TcpListener::bind(&self.config.addr).await?;
         info!("Server listening on http://{}", self.config.addr);
+        Ok(listener)
+    }
 
-        // Create a semaphore to limit concurrent connections
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
-
-        // Create a channel for shutdown signaling
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let shutdown_tx = Arc::new(shutdown_tx);
-
-        // Use JoinSet to keep track of all spawned tasks
-        let mut tasks = JoinSet::new();
-
-        // Set up a Ctrl+C handler for graceful shutdown
+    /// Set up a Ctrl+C handler for graceful shutdown.
+    fn setup_ctrl_c_handler(shutdown_tx: Arc<mpsc::Sender<()>>, tasks: &mut JoinSet<()>) {
         let shutdown_tx_clone = shutdown_tx.clone();
         tasks.spawn(async move {
             match signal::ctrl_c().await {
@@ -329,76 +327,74 @@ impl HttpServer {
                 }
             }
         });
+    }
 
-        loop {
-            tokio::select! {
-                // Check for shutdown signal
-                _ = shutdown_rx.recv() => {
-                    info!("Shutting down server...");
-                    break;
-                }
+    /// Handle a new connection.
+    async fn handle_new_connection(
+        mut socket: tokio::net::TcpStream,
+        addr: SocketAddr,
+        semaphore: Arc<tokio::sync::Semaphore>,
+        routes: Arc<RwLock<Vec<Route>>>,
+        read_buffer_size: usize,
+        shutdown_tx: Arc<mpsc::Sender<()>>,
+        tasks: &mut JoinSet<()>,
+    ) {
 
-                // Accept new connections
-                accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok((mut socket, addr)) => {
-                            info!("Connection from: {}", addr);
+        // Try to acquire a permit from the semaphore
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(
+                    "Connection limit reached, rejecting connection from {}",
+                    addr
+                );
+                // Send a 503 Service Unavailable response
+                let response = HttpResponse::new(StatusCode::ServiceUnavailable)
+                    .with_content_type("text/plain")
+                    .with_body_string("Server is at capacity, please try again later");
+                let _ = socket.write_all(&response.to_bytes()).await;
+                return;
+            }
+        };
 
-                            // Try to acquire a permit from the semaphore
-                            let permit = match semaphore.clone().try_acquire_owned() {
-                                Ok(permit) => permit,
-                                Err(_) => {
-                                    warn!(
-                                        "Connection limit reached, rejecting connection from {}",
-                                        addr
-                                    );
-                                    // Send a 503 Service Unavailable response
-                                    let response = HttpResponse::new(StatusCode::ServiceUnavailable)
-                                        .with_content_type("text/plain")
-                                        .with_body_string("Server is at capacity, please try again later");
-                                    let _ = socket.write_all(&response.to_bytes()).await;
-                                    continue;
-                                }
-                            };
+        // Clone references for the task
+        let routes = routes.clone();
+        let shutdown_tx = shutdown_tx.clone();
 
-                            // Clone references for the task
-                            let routes = self.routes.clone();
-                            let read_buffer_size = self.config.read_buffer_size;
-                            let shutdown_tx = shutdown_tx.clone();
+        // Spawn a task to handle the connection
+        tasks.spawn(async move {
+            // The permit is dropped when the task completes, releasing the semaphore slot
+            let _permit = permit;
 
-                            // Spawn a task to handle the connection
-                            tasks.spawn(async move {
-                                // The permit is dropped when the task completes, releasing the semaphore slot
-                                let _permit = permit;
+            if let Err(e) = Self::handle_connection(&mut socket, routes, read_buffer_size).await {
+                error!("Error handling connection: {}", e);
 
-                                if let Err(e) = Self::handle_connection(&mut socket, routes, read_buffer_size).await {
-                                    error!("Error handling connection: {}", e);
-
-                                    // If there's a critical error, signal shutdown
-                                    if matches!(e, Error::IoError(_)) {
-                                        info!("Critical I/O error, initiating shutdown");
-                                        let _ = shutdown_tx.send(()).await;
-                                    }
-                                }
-                            });
-                        },
-                        Err(e) => {
-                            error!("Error accepting connection: {}", e);
-
-                            // If there's a critical error, break the loop
-                            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                                error!("Critical error accepting connection, shutting down");
-                                break;
-                            }
-
-                            // For other errors, wait a bit before retrying
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        }
-                    }
+                // If there's a critical error, signal shutdown
+                if matches!(e, Error::IoError(_)) {
+                    info!("Critical I/O error, initiating shutdown");
+                    let _ = shutdown_tx.send(()).await;
                 }
             }
+        });
+    }
+
+    /// Handle connection errors.
+    async fn handle_connection_error(e: std::io::Error) -> bool {
+        error!("Error accepting connection: {}", e);
+
+        // If there's a critical error, signal to break the loop
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            error!("Critical error accepting connection, shutting down");
+            return true;
         }
 
+        // For other errors, wait a bit before retrying
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        false
+    }
+
+    /// Perform graceful shutdown.
+    async fn perform_shutdown(tasks: &mut JoinSet<()>) {
         // Wait for all tasks to complete (with timeout)
         info!("Waiting for {} active connections to complete...", tasks.len());
         let shutdown_timeout = tokio::time::Duration::from_secs(30);
@@ -411,6 +407,64 @@ impl HttpServer {
         }).await;
 
         info!("Server shutdown complete");
+    }
+
+    /// Start the server and listen for incoming connections.
+    pub async fn start(&self) -> Result<(), Error> {
+        // Display server information
+        self.display_server_info().await?;
+
+        // Set up the TCP listener
+        let listener = self.setup_listener().await?;
+
+        // Create a semaphore to limit concurrent connections
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
+
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let shutdown_tx = Arc::new(shutdown_tx);
+
+        // Use JoinSet to keep track of all spawned tasks
+        let mut tasks = JoinSet::new();
+
+        // Set up a Ctrl+C handler for graceful shutdown
+        Self::setup_ctrl_c_handler(shutdown_tx.clone(), &mut tasks);
+
+        loop {
+            tokio::select! {
+                // Check for shutdown signal
+                _ = shutdown_rx.recv() => {
+                    info!("Shutting down server...");
+                    break;
+                }
+
+                // Accept new connections
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((socket, addr)) => {
+                            Self::handle_new_connection(
+                                socket, 
+                                addr, 
+                                semaphore.clone(), 
+                                self.routes.clone(), 
+                                self.config.read_buffer_size, 
+                                shutdown_tx.clone(), 
+                                &mut tasks
+                            ).await;
+                        },
+                        Err(e) => {
+                            if Self::handle_connection_error(e).await {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Perform graceful shutdown
+        Self::perform_shutdown(&mut tasks).await;
+
         Ok(())
     }
 
