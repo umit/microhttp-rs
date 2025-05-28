@@ -4,9 +4,13 @@ use microhttp_rs::{
     HttpResponse, HttpServer, Method, ServerConfig, StatusCode, ServerError
 };
 use serde::{Deserialize, Serialize};
+use log::{info};
+use env_logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the logger
+    env_logger::init();
     // Create a server configuration
     let config = ServerConfig {
         addr: "127.0.0.1:8083".parse()?,
@@ -136,15 +140,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_body_string(response_body))
     }).await;
 
-    println!("Server configured with the following routes:");
-    println!("  GET  /");
-    println!("  GET  /hello");
-    println!("  GET  /api/data");
-    println!("  POST /api/data");
-    println!("  POST /api/users");
-    println!("  GET  /status");
-    println!("  GET  /headers");
-    println!("\nStarting server on http://127.0.0.1:8083");
+    info!("Server configured with the following routes:");
+    info!("  GET  /");
+    info!("  GET  /hello");
+    info!("  GET  /api/data");
+    info!("  POST /api/data");
+    info!("  POST /api/users");
+    info!("  GET  /status");
+    info!("  GET  /headers");
+    info!("Starting server on http://127.0.0.1:8083");
 
     // Start the server
     server.start().await?;

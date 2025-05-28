@@ -2,7 +2,7 @@
 //!
 //! This module provides a simple, efficient HTTP server implementation
 //! that leverages Rust's concurrency features and the microhttp-rs parser.
-
+use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -10,8 +10,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
-use serde::Serialize;
+use tokio::sync::{RwLock, mpsc};
+use tokio::task::JoinSet;
+use tokio::signal;
+use log::{info, warn, error};
 
 use crate::parser::{Error as ParserError, HttpRequest, Method};
 
@@ -209,7 +211,11 @@ pub enum Error {
 }
 
 /// Type alias for a handler function.
-pub type HandlerFn = Arc<dyn Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Error>> + Send>> + Send + Sync>;
+pub type HandlerFn = Arc<
+    dyn Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Error>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A route in the HTTP server.
 #[derive(Clone)]
@@ -282,42 +288,130 @@ impl HttpServer {
 
     /// Start the server and listen for incoming connections.
     pub async fn start(&self) -> Result<(), Error> {
+        // Display the banner
+        let banner = include_str!("banner.txt");
+        info!("\n{}", banner);
+
+        // Display registered endpoints
+        let routes = self.routes.read().await;
+        info!("Registered endpoints:");
+        for route in routes.iter() {
+            let methods = route.methods.iter()
+                .map(|m| format!("{}", m))
+                .collect::<Vec<String>>()
+                .join(", ");
+            info!("  {} {}", methods, route.path);
+        }
+
         let listener = TcpListener::bind(&self.config.addr).await?;
-        println!("Server listening on http://{}", self.config.addr);
+        info!("Server listening on http://{}", self.config.addr);
 
         // Create a semaphore to limit concurrent connections
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
 
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let shutdown_tx = Arc::new(shutdown_tx);
+
+        // Use JoinSet to keep track of all spawned tasks
+        let mut tasks = JoinSet::new();
+
+        // Set up a Ctrl+C handler for graceful shutdown
+        let shutdown_tx_clone = shutdown_tx.clone();
+        tasks.spawn(async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received shutdown signal, stopping server...");
+                    let _ = shutdown_tx_clone.send(()).await;
+                }
+                Err(err) => {
+                    error!("Error setting up Ctrl+C handler: {}", err);
+                }
+            }
+        });
+
         loop {
-            let (mut socket, addr) = listener.accept().await?;
-            println!("Connection from: {}", addr);
-
-            // Try to acquire a permit from the semaphore
-            let permit = match semaphore.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    println!("Connection limit reached, rejecting connection from {}", addr);
-                    // Send a 503 Service Unavailable response
-                    let response = HttpResponse::new(StatusCode::ServiceUnavailable)
-                        .with_content_type("text/plain")
-                        .with_body_string("Server is at capacity, please try again later");
-                    let _ = socket.write_all(&response.to_bytes()).await;
-                    continue;
+            tokio::select! {
+                // Check for shutdown signal
+                _ = shutdown_rx.recv() => {
+                    info!("Shutting down server...");
+                    break;
                 }
-            };
 
-            let routes = self.routes.clone();
-            let read_buffer_size = self.config.read_buffer_size;
+                // Accept new connections
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((mut socket, addr)) => {
+                            info!("Connection from: {}", addr);
 
-            tokio::spawn(async move {
-                // The permit is dropped when the task completes, releasing the semaphore slot
-                let _permit = permit;
+                            // Try to acquire a permit from the semaphore
+                            let permit = match semaphore.clone().try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    warn!(
+                                        "Connection limit reached, rejecting connection from {}",
+                                        addr
+                                    );
+                                    // Send a 503 Service Unavailable response
+                                    let response = HttpResponse::new(StatusCode::ServiceUnavailable)
+                                        .with_content_type("text/plain")
+                                        .with_body_string("Server is at capacity, please try again later");
+                                    let _ = socket.write_all(&response.to_bytes()).await;
+                                    continue;
+                                }
+                            };
 
-                if let Err(e) = Self::handle_connection(&mut socket, routes, read_buffer_size).await {
-                    eprintln!("Error handling connection: {}", e);
+                            // Clone references for the task
+                            let routes = self.routes.clone();
+                            let read_buffer_size = self.config.read_buffer_size;
+                            let shutdown_tx = shutdown_tx.clone();
+
+                            // Spawn a task to handle the connection
+                            tasks.spawn(async move {
+                                // The permit is dropped when the task completes, releasing the semaphore slot
+                                let _permit = permit;
+
+                                if let Err(e) = Self::handle_connection(&mut socket, routes, read_buffer_size).await {
+                                    error!("Error handling connection: {}", e);
+
+                                    // If there's a critical error, signal shutdown
+                                    if matches!(e, Error::IoError(_)) {
+                                        info!("Critical I/O error, initiating shutdown");
+                                        let _ = shutdown_tx.send(()).await;
+                                    }
+                                }
+                            });
+                        },
+                        Err(e) => {
+                            error!("Error accepting connection: {}", e);
+
+                            // If there's a critical error, break the loop
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                error!("Critical error accepting connection, shutting down");
+                                break;
+                            }
+
+                            // For other errors, wait a bit before retrying
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                    }
                 }
-            });
+            }
         }
+
+        // Wait for all tasks to complete (with timeout)
+        info!("Waiting for {} active connections to complete...", tasks.len());
+        let shutdown_timeout = tokio::time::Duration::from_secs(30);
+        let _ = tokio::time::timeout(shutdown_timeout, async {
+            while let Some(res) = tasks.join_next().await {
+                if let Err(e) = res {
+                    error!("Task failed during shutdown: {}", e);
+                }
+            }
+        }).await;
+
+        info!("Server shutdown complete");
+        Ok(())
     }
 
     /// Handle a single connection.
@@ -331,7 +425,7 @@ impl HttpServer {
         // Read data from the socket
         let n = socket.read(&mut buf).await?;
         if n == 0 {
-            return Ok(());  // Connection closed
+            return Ok(()); // Connection closed
         }
 
         // Parse the HTTP request
@@ -413,14 +507,21 @@ impl HttpServer {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::Semaphore;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::{mpsc, Semaphore};
+    use tokio::task::JoinSet;
+    use tokio::time;
+    use log::debug;
 
     #[test]
     fn test_status_code_reason_phrase() {
         assert_eq!(StatusCode::Ok.reason_phrase(), "OK");
         assert_eq!(StatusCode::NotFound.reason_phrase(), "Not Found");
-        assert_eq!(StatusCode::InternalServerError.reason_phrase(), "Internal Server Error");
+        assert_eq!(
+            StatusCode::InternalServerError.reason_phrase(),
+            "Internal Server Error"
+        );
     }
 
     #[tokio::test]
@@ -440,20 +541,29 @@ mod tests {
             let permit = match semaphore.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
-                    return Err(format!("Connection {} rejected: limit reached", connection_id));
+                    return Err(format!(
+                        "Connection {} rejected: limit reached",
+                        connection_id
+                    ));
                 }
             };
 
             // Increment active connections counter
             let count = active_connections.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Connection {} accepted. Active connections: {}", connection_id, count);
+            debug!(
+                "Connection {} accepted. Active connections: {}",
+                connection_id, count
+            );
 
             // Simulate some work
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
             // Decrement active connections counter (permit is dropped when this function returns)
             let count = active_connections.fetch_sub(1, Ordering::SeqCst) - 1;
-            println!("Connection {} completed. Active connections: {}", connection_id, count);
+            debug!(
+                "Connection {} completed. Active connections: {}",
+                connection_id, count
+            );
 
             // The permit is dropped here, releasing the semaphore slot
             drop(permit);
@@ -469,14 +579,15 @@ mod tests {
         for i in 0..max_connections {
             let semaphore_clone = semaphore.clone();
             let active_clone = active_connections.clone();
-            let handle = tokio::spawn(async move {
-                handle_connection(semaphore_clone, active_clone, i).await
-            });
+            let handle =
+                tokio::spawn(
+                    async move { handle_connection(semaphore_clone, active_clone, i).await },
+                );
             handles.push(handle);
         }
 
         // Wait a bit to ensure the first connections are being processed
-        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
 
         // Now spawn one more connection that should be rejected
         let semaphore_clone = semaphore.clone();
@@ -499,13 +610,22 @@ mod tests {
         }
 
         // Verify that the extra connection was rejected
-        assert!(reject_result.is_err(), "Connection {} should have been rejected", max_connections);
-        assert!(reject_result.unwrap_err().contains("limit reached"), 
-                "Rejection message should indicate limit reached");
+        assert!(
+            reject_result.is_err(),
+            "Connection {} should have been rejected",
+            max_connections
+        );
+        assert!(
+            reject_result.unwrap_err().contains("limit reached"),
+            "Rejection message should indicate limit reached"
+        );
 
         // Verify that no active connections remain
-        assert_eq!(active_connections.load(Ordering::SeqCst), 0, 
-                   "All connections should be completed");
+        assert_eq!(
+            active_connections.load(Ordering::SeqCst),
+            0,
+            "All connections should be completed"
+        );
     }
 
     #[tokio::test]
@@ -531,22 +651,27 @@ mod tests {
         assert_eq!(default_server.config.max_connections, 1024);
 
         // Verify that the two servers have different max_connections values
-        assert_ne!(server.config.max_connections, default_server.config.max_connections);
+        assert_ne!(
+            server.config.max_connections,
+            default_server.config.max_connections
+        );
     }
 
     #[test]
     fn test_http_response_creation() {
         let response = HttpResponse::new(StatusCode::Ok);
         assert_eq!(response.status, StatusCode::Ok);
-        assert_eq!(response.headers.get("Server"), Some(&"microhttp-rs".to_string()));
+        assert_eq!(
+            response.headers.get("Server"),
+            Some(&"microhttp-rs".to_string())
+        );
         assert!(response.body.is_empty());
     }
 
     #[test]
     fn test_http_response_with_body_string() {
         let body = "Hello, world!";
-        let response = HttpResponse::new(StatusCode::Ok)
-            .with_body_string(body);
+        let response = HttpResponse::new(StatusCode::Ok).with_body_string(body);
 
         assert_eq!(response.body, body.as_bytes());
         assert_eq!(
@@ -558,8 +683,7 @@ mod tests {
     #[test]
     fn test_http_response_with_body_bytes() {
         let body = b"Binary data";
-        let response = HttpResponse::new(StatusCode::Ok)
-            .with_body_bytes(body.to_vec());
+        let response = HttpResponse::new(StatusCode::Ok).with_body_bytes(body.to_vec());
 
         assert_eq!(response.body, body);
         assert_eq!(
@@ -570,19 +694,14 @@ mod tests {
 
     #[test]
     fn test_http_response_with_header() {
-        let response = HttpResponse::new(StatusCode::Ok)
-            .with_header("X-Custom", "Value");
+        let response = HttpResponse::new(StatusCode::Ok).with_header("X-Custom", "Value");
 
-        assert_eq!(
-            response.headers.get("X-Custom"),
-            Some(&"Value".to_string())
-        );
+        assert_eq!(response.headers.get("X-Custom"), Some(&"Value".to_string()));
     }
 
     #[test]
     fn test_http_response_with_content_type() {
-        let response = HttpResponse::new(StatusCode::Ok)
-            .with_content_type("application/json");
+        let response = HttpResponse::new(StatusCode::Ok).with_content_type("application/json");
 
         assert_eq!(
             response.headers.get("Content-Type"),
@@ -620,9 +739,7 @@ mod tests {
         };
 
         // Test with_json method
-        let response = HttpResponse::new(StatusCode::Ok)
-            .with_json(&user)
-            .unwrap();
+        let response = HttpResponse::new(StatusCode::Ok).with_json(&user).unwrap();
 
         // Verify content type is set to application/json
         assert_eq!(
@@ -643,5 +760,146 @@ mod tests {
         // Deserialize the body back to verify it's valid JSON
         let deserialized: TestUser = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(deserialized, user);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_signal() {
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Create a flag to track if shutdown was received
+        let shutdown_received = Arc::new(AtomicBool::new(false));
+        let shutdown_received_clone = shutdown_received.clone();
+
+        // Spawn a task that simulates the server loop
+        let server_handle = tokio::spawn(async move {
+            // Create a JoinSet to track tasks
+            let mut tasks = JoinSet::new();
+
+            // Spawn a few "connection handler" tasks
+            for i in 0..3 {
+                tasks.spawn(async move {
+                    // Simulate some work
+                    time::sleep(Duration::from_millis(50)).await;
+                    debug!("Task {} completed", i);
+                    Ok::<_, Error>(())
+                });
+            }
+
+            // Wait for shutdown signal or timeout
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    shutdown_received_clone.store(true, Ordering::SeqCst);
+                    debug!("Shutdown signal received");
+                }
+                _ = time::sleep(Duration::from_secs(5)) => {
+                    panic!("Test timed out waiting for shutdown signal");
+                }
+            }
+
+            // Wait for all tasks to complete
+            while let Some(res) = tasks.join_next().await {
+                assert!(res.is_ok(), "Task failed: {:?}", res);
+            }
+
+            debug!("All tasks completed after shutdown");
+        });
+
+        // Wait a bit for the server to start
+        time::sleep(Duration::from_millis(10)).await;
+
+        // Send shutdown signal
+        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+
+        // Wait for the server to shut down
+        server_handle.await.expect("Server task failed");
+
+        // Verify that shutdown was received
+        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+    }
+
+    #[tokio::test]
+    async fn test_graceful_shutdown_with_active_connections() {
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Create counters to track active and completed connections
+        let active_connections = Arc::new(AtomicUsize::new(0));
+        let completed_connections = Arc::new(AtomicUsize::new(0));
+        let active_clone = active_connections.clone();
+        let completed_clone = completed_connections.clone();
+
+        // Create a flag to track if shutdown was received
+        let shutdown_received = Arc::new(AtomicBool::new(false));
+        let shutdown_received_clone = shutdown_received.clone();
+
+        // Spawn a task that simulates the server loop
+        let server_handle = tokio::spawn(async move {
+            // Create a JoinSet to track tasks
+            let mut tasks = JoinSet::new();
+
+            // Spawn "connection handler" tasks with different durations
+            for i in 0..5 {
+                let active = active_clone.clone();
+                let completed = completed_clone.clone();
+
+                tasks.spawn(async move {
+                    // Increment active connections
+                    active.fetch_add(1, Ordering::SeqCst);
+
+                    // Simulate work with different durations
+                    let duration = Duration::from_millis(50 * (i + 1));
+                    time::sleep(duration).await;
+
+                    // Decrement active and increment completed
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    completed.fetch_add(1, Ordering::SeqCst);
+
+                    debug!("Task {} completed after {:?}", i, duration);
+                    Ok::<_, Error>(())
+                });
+            }
+
+            // Wait for shutdown signal or timeout
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    shutdown_received_clone.store(true, Ordering::SeqCst);
+                    debug!("Shutdown signal received, waiting for tasks to complete");
+                }
+                _ = time::sleep(Duration::from_secs(5)) => {
+                    panic!("Test timed out waiting for shutdown signal");
+                }
+            }
+
+            // Wait for all tasks to complete
+            while let Some(res) = tasks.join_next().await {
+                assert!(res.is_ok(), "Task failed: {:?}", res);
+            }
+
+            debug!("All tasks completed after shutdown");
+        });
+
+        // Wait a bit for the server to start and some tasks to begin
+        time::sleep(Duration::from_millis(75)).await;
+
+        // Verify that some connections are active
+        let active_before_shutdown = active_connections.load(Ordering::SeqCst);
+        let completed_before_shutdown = completed_connections.load(Ordering::SeqCst);
+        assert!(active_before_shutdown > 0, "No active connections before shutdown");
+
+        // Send shutdown signal
+        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+
+        // Wait for the server to shut down
+        server_handle.await.expect("Server task failed");
+
+        // Verify that shutdown was received
+        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+
+        // Verify that all connections were completed
+        assert_eq!(active_connections.load(Ordering::SeqCst), 0, "Not all connections completed");
+        assert_eq!(completed_connections.load(Ordering::SeqCst), 5, "Not all connections were processed");
+        assert!(completed_connections.load(Ordering::SeqCst) > completed_before_shutdown, 
+                "No additional connections completed after shutdown");
     }
 }

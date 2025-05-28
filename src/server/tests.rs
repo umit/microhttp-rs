@@ -7,8 +7,13 @@ mod server_tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, Semaphore};
+    use tokio::task::JoinSet;
+    use tokio::time;
+    use log::{debug};
 
     use crate::parser::{HttpRequest, Method, HttpVersion};
     use crate::server::{HttpServer, ServerConfig, HttpResponse, StatusCode, Error};
@@ -336,14 +341,14 @@ mod server_tests {
 
             // Increment active connections counter
             let count = active_connections.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Connection {} accepted. Active connections: {}", connection_id, count);
+            debug!("Connection {} accepted. Active connections: {}", connection_id, count);
 
             // Simulate some work
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
             // Decrement active connections counter (permit is dropped when this function returns)
             let count = active_connections.fetch_sub(1, Ordering::SeqCst) - 1;
-            println!("Connection {} completed. Active connections: {}", connection_id, count);
+            debug!("Connection {} completed. Active connections: {}", connection_id, count);
 
             // The permit is dropped here, releasing the semaphore slot
             drop(permit);
@@ -451,5 +456,146 @@ mod server_tests {
 
         // Verify that the two servers have different max_connections values
         assert_ne!(server.config.max_connections, default_server.config.max_connections);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_signal() {
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Create a flag to track if shutdown was received
+        let shutdown_received = Arc::new(AtomicBool::new(false));
+        let shutdown_received_clone = shutdown_received.clone();
+
+        // Spawn a task that simulates the server loop
+        let server_handle = tokio::spawn(async move {
+            // Create a JoinSet to track tasks
+            let mut tasks = JoinSet::new();
+
+            // Spawn a few "connection handler" tasks
+            for i in 0..3 {
+                tasks.spawn(async move {
+                    // Simulate some work
+                    time::sleep(Duration::from_millis(50)).await;
+                    debug!("Task {} completed", i);
+                    Ok::<_, Error>(())
+                });
+            }
+
+            // Wait for shutdown signal or timeout
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    shutdown_received_clone.store(true, Ordering::SeqCst);
+                    debug!("Shutdown signal received");
+                }
+                _ = time::sleep(Duration::from_secs(5)) => {
+                    panic!("Test timed out waiting for shutdown signal");
+                }
+            }
+
+            // Wait for all tasks to complete
+            while let Some(res) = tasks.join_next().await {
+                assert!(res.is_ok(), "Task failed: {:?}", res);
+            }
+
+            debug!("All tasks completed after shutdown");
+        });
+
+        // Wait a bit for the server to start
+        time::sleep(Duration::from_millis(10)).await;
+
+        // Send shutdown signal
+        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+
+        // Wait for the server to shut down
+        server_handle.await.expect("Server task failed");
+
+        // Verify that shutdown was received
+        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+    }
+
+    #[tokio::test]
+    async fn test_graceful_shutdown_with_active_connections() {
+        // Create a channel for shutdown signaling
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Create counters to track active and completed connections
+        let active_connections = Arc::new(AtomicUsize::new(0));
+        let completed_connections = Arc::new(AtomicUsize::new(0));
+        let active_clone = active_connections.clone();
+        let completed_clone = completed_connections.clone();
+
+        // Create a flag to track if shutdown was received
+        let shutdown_received = Arc::new(AtomicBool::new(false));
+        let shutdown_received_clone = shutdown_received.clone();
+
+        // Spawn a task that simulates the server loop
+        let server_handle = tokio::spawn(async move {
+            // Create a JoinSet to track tasks
+            let mut tasks = JoinSet::new();
+
+            // Spawn "connection handler" tasks with different durations
+            for i in 0..5 {
+                let active = active_clone.clone();
+                let completed = completed_clone.clone();
+
+                tasks.spawn(async move {
+                    // Increment active connections
+                    active.fetch_add(1, Ordering::SeqCst);
+
+                    // Simulate work with different durations
+                    let duration = Duration::from_millis(50 * (i + 1));
+                    time::sleep(duration).await;
+
+                    // Decrement active and increment completed
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    completed.fetch_add(1, Ordering::SeqCst);
+
+                    debug!("Task {} completed after {:?}", i, duration);
+                    Ok::<_, Error>(())
+                });
+            }
+
+            // Wait for shutdown signal or timeout
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    shutdown_received_clone.store(true, Ordering::SeqCst);
+                    debug!("Shutdown signal received, waiting for tasks to complete");
+                }
+                _ = time::sleep(Duration::from_secs(5)) => {
+                    panic!("Test timed out waiting for shutdown signal");
+                }
+            }
+
+            // Wait for all tasks to complete
+            while let Some(res) = tasks.join_next().await {
+                assert!(res.is_ok(), "Task failed: {:?}", res);
+            }
+
+            debug!("All tasks completed after shutdown");
+        });
+
+        // Wait a bit for the server to start and some tasks to begin
+        time::sleep(Duration::from_millis(75)).await;
+
+        // Verify that some connections are active
+        let active_before_shutdown = active_connections.load(Ordering::SeqCst);
+        let completed_before_shutdown = completed_connections.load(Ordering::SeqCst);
+        assert!(active_before_shutdown > 0, "No active connections before shutdown");
+
+        // Send shutdown signal
+        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+
+        // Wait for the server to shut down
+        server_handle.await.expect("Server task failed");
+
+        // Verify that shutdown was received
+        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+
+        // Verify that all connections were completed
+        assert_eq!(active_connections.load(Ordering::SeqCst), 0, "Not all connections completed");
+        assert_eq!(completed_connections.load(Ordering::SeqCst), 5, "Not all connections were processed");
+        assert!(completed_connections.load(Ordering::SeqCst) > completed_before_shutdown, 
+                "No additional connections completed after shutdown");
     }
 }

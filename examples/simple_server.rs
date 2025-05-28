@@ -3,17 +3,21 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use microhttp_rs::{parse_request, ParserError};
+use log::{info, error, debug};
+use env_logger;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize the logger
+    env_logger::init();
     // Bind to localhost:8082
     let listener = TcpListener::bind("127.0.0.1:8082").await?;
-    println!("Server listening on http://127.0.0.1:8082");
+    info!("Server listening on http://127.0.0.1:8082");
 
     loop {
         // Accept incoming connections
         let (mut socket, addr) = listener.accept().await?;
-        println!("Connection from: {}", addr);
+        info!("Connection from: {}", addr);
 
         // Spawn a new task for each connection
         tokio::spawn(async move {
@@ -22,12 +26,12 @@ async fn main() -> std::io::Result<()> {
             // Read data from the socket
             match socket.read(&mut buf).await {
                 Ok(n) if n > 0 => {
-                    println!("Received {} bytes", n);
+                    debug!("Received {} bytes", n);
 
                     // Parse the HTTP request
                     let response = match parse_request(&buf[..n]) {
                         Ok(request) => {
-                            println!("Parsed request: {} {} {}", request.method, request.path, request.version);
+                            debug!("Parsed request: {} {} {}", request.method, request.path, request.version);
 
                             // Generate a simple response
                             let body = format!(
@@ -46,7 +50,7 @@ async fn main() -> std::io::Result<()> {
                             )
                         },
                         Err(err) => {
-                            println!("Error parsing request: {}", err);
+                            error!("Error parsing request: {}", err);
 
                             // Generate an error response
                             let error_message = match err {
@@ -74,14 +78,14 @@ async fn main() -> std::io::Result<()> {
 
                     // Write the response back to the client
                     if let Err(e) = socket.write_all(response.as_bytes()).await {
-                        println!("Error writing response: {}", e);
+                        error!("Error writing response: {}", e);
                     }
                 },
                 Ok(_) => {
-                    println!("Client closed connection");
+                    info!("Client closed connection");
                 },
                 Err(e) => {
-                    println!("Error reading from socket: {}", e);
+                    error!("Error reading from socket: {}", e);
                 }
             }
         });
