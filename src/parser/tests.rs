@@ -207,6 +207,16 @@ mod tests {
     }
 
     #[test]
+    fn test_query_parameters_without_values() {
+        let request = b"GET /search?q=test&flag&empty= HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let result = parse_request(request).unwrap();
+        assert_eq!(result.path, "/search?q=test&flag&empty=");
+        assert_eq!(result.query_params.get("q").unwrap(), "test");
+        assert_eq!(result.query_params.get("flag").unwrap(), "");
+        assert_eq!(result.query_params.get("empty").unwrap(), "");
+    }
+
+    #[test]
     fn test_malformed_utf8_in_request() {
         let request = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nX-Test: \xFF\xFF\xFF\r\n\r\n";
         let result = parse_request(request);

@@ -40,17 +40,20 @@ impl HttpRequest {
     /// A new HTTP request with an empty body
     pub fn new(method: Method, path: String, version: HttpVersion, headers: HashMap<String, String>) -> Self {
         // Parse query parameters from the path
-        let mut query_params = HashMap::new();
-        if let Some(query_start) = path.find('?') {
-            let query_string = &path[query_start + 1..];
-            for pair in query_string.split('&') {
-                if let Some(eq_pos) = pair.find('=') {
-                    let key = pair[..eq_pos].to_string();
-                    let value = pair[eq_pos + 1..].to_string();
-                    query_params.insert(key, value);
-                }
-            }
-        }
+        let query_params: HashMap<String, String> = path
+            .split_once('?')
+            .map(|(_, query)| query
+                .split('&')
+                .filter(|s| !s.is_empty())
+                .map(|pair| {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        (k.to_string(), v.to_string())
+                    } else {
+                        (pair.to_string(), String::new())
+                    }
+                })
+                .collect())
+            .unwrap_or_default();
 
         Self {
             method,
