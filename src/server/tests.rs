@@ -3,20 +3,20 @@
 #[cfg(test)]
 mod server_tests {
     use std::io::{self, Cursor};
-    use std::net::SocketAddr;
+
+    use log::debug;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::task::{Context, Poll};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-    use tokio::sync::{mpsc, Semaphore};
+    use tokio::sync::mpsc;
     use tokio::task::JoinSet;
     use tokio::time;
-    use log::{debug};
 
-    use crate::parser::{HttpRequest, Method, HttpVersion};
-    use crate::server::{HttpServer, ServerConfig, HttpResponse, StatusCode, Error};
+    use crate::parser::Method;
+    use crate::server::{Error, HttpResponse, HttpServer, ServerConfig, StatusCode};
 
     // Mock TcpStream for testing
     struct MockTcpStream {
@@ -89,11 +89,13 @@ mod server_tests {
         let server = HttpServer::new(ServerConfig::default());
 
         // Add a route
-        server.add_route("/test", vec![Method::GET], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Ok)
-                .with_content_type("text/plain")
-                .with_body_string("Test response"))
-        }).await;
+        server
+            .add_route("/test", vec![Method::GET], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Ok)
+                    .with_content_type("text/plain")
+                    .with_body_string("Test response"))
+            })
+            .await;
 
         // Verify the route was added
         let routes = server.routes.read().await;
@@ -110,18 +112,16 @@ mod server_tests {
 
         // Create a server with a test route
         let server = HttpServer::new(ServerConfig::default());
-        server.add_route("/test", vec![Method::GET], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Ok)
-                .with_content_type("text/plain")
-                .with_body_string("Test response"))
-        }).await;
+        server
+            .add_route("/test", vec![Method::GET], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Ok)
+                    .with_content_type("text/plain")
+                    .with_body_string("Test response"))
+            })
+            .await;
 
         // Handle the connection
-        let result = HttpServer::handle_connection(
-            &mut stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result = HttpServer::handle_connection(&mut stream, server.routes.clone(), 1024).await;
 
         // Verify the result
         assert!(result.is_ok());
@@ -141,18 +141,16 @@ mod server_tests {
 
         // Create a server with a different route
         let server = HttpServer::new(ServerConfig::default());
-        server.add_route("/test", vec![Method::GET], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Ok)
-                .with_content_type("text/plain")
-                .with_body_string("Test response"))
-        }).await;
+        server
+            .add_route("/test", vec![Method::GET], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Ok)
+                    .with_content_type("text/plain")
+                    .with_body_string("Test response"))
+            })
+            .await;
 
         // Handle the connection
-        let result = HttpServer::handle_connection(
-            &mut stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result = HttpServer::handle_connection(&mut stream, server.routes.clone(), 1024).await;
 
         // Verify the result is an error
         assert!(result.is_err());
@@ -172,18 +170,16 @@ mod server_tests {
 
         // Create a server with a route that only accepts GET
         let server = HttpServer::new(ServerConfig::default());
-        server.add_route("/test", vec![Method::GET], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Ok)
-                .with_content_type("text/plain")
-                .with_body_string("Test response"))
-        }).await;
+        server
+            .add_route("/test", vec![Method::GET], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Ok)
+                    .with_content_type("text/plain")
+                    .with_body_string("Test response"))
+            })
+            .await;
 
         // Handle the connection
-        let result = HttpServer::handle_connection(
-            &mut stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result = HttpServer::handle_connection(&mut stream, server.routes.clone(), 1024).await;
 
         // Verify the result is an error
         assert!(result.is_err());
@@ -206,11 +202,7 @@ mod server_tests {
         let server = HttpServer::new(ServerConfig::default());
 
         // Handle the connection
-        let result = HttpServer::handle_connection(
-            &mut stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result = HttpServer::handle_connection(&mut stream, server.routes.clone(), 1024).await;
 
         // Verify the result is an error
         assert!(result.is_err());
@@ -228,25 +220,24 @@ mod server_tests {
         let server = HttpServer::new(ServerConfig::default());
 
         // Add routes
-        server.add_route("/route1", vec![Method::GET], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Ok)
-                .with_body_string("Route 1"))
-        }).await;
+        server
+            .add_route("/route1", vec![Method::GET], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Ok).with_body_string("Route 1"))
+            })
+            .await;
 
-        server.add_route("/route2", vec![Method::POST], |_req| async {
-            Ok(HttpResponse::new(StatusCode::Created)
-                .with_body_string("Route 2"))
-        }).await;
+        server
+            .add_route("/route2", vec![Method::POST], |_req| async {
+                Ok(HttpResponse::new(StatusCode::Created).with_body_string("Route 2"))
+            })
+            .await;
 
         // Test route 1
         let request1 = b"GET /route1 HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let mut stream1 = MockTcpStream::new(request1.to_vec());
 
-        let result1 = HttpServer::handle_connection(
-            &mut stream1,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result1 =
+            HttpServer::handle_connection(&mut stream1, server.routes.clone(), 1024).await;
 
         assert!(result1.is_ok());
         let response1 = String::from_utf8_lossy(stream1.written_data());
@@ -257,11 +248,8 @@ mod server_tests {
         let request2 = b"POST /route2 HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let mut stream2 = MockTcpStream::new(request2.to_vec());
 
-        let result2 = HttpServer::handle_connection(
-            &mut stream2,
-            server.routes.clone(),
-            1024
-        ).await;
+        let result2 =
+            HttpServer::handle_connection(&mut stream2, server.routes.clone(), 1024).await;
 
         assert!(result2.is_ok());
         let response2 = String::from_utf8_lossy(stream2.written_data());
@@ -275,25 +263,29 @@ mod server_tests {
         let server = HttpServer::new(ServerConfig::default());
 
         // Add a route that accepts both GET and POST
-        server.add_route("/multi", vec![Method::GET, Method::POST], |req| async move {
-            match req.method {
-                Method::GET => Ok(HttpResponse::new(StatusCode::Ok)
-                    .with_body_string("GET response")),
-                Method::POST => Ok(HttpResponse::new(StatusCode::Created)
-                    .with_body_string("POST response")),
-                _ => Err(Error::InternalError("Unexpected method".to_string())),
-            }
-        }).await;
+        server
+            .add_route(
+                "/multi",
+                vec![Method::GET, Method::POST],
+                |req| async move {
+                    match req.method {
+                        Method::GET => {
+                            Ok(HttpResponse::new(StatusCode::Ok).with_body_string("GET response"))
+                        }
+                        Method::POST => Ok(HttpResponse::new(StatusCode::Created)
+                            .with_body_string("POST response")),
+                        _ => Err(Error::InternalError("Unexpected method".to_string())),
+                    }
+                },
+            )
+            .await;
 
         // Test GET request
         let get_request = b"GET /multi HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let mut get_stream = MockTcpStream::new(get_request.to_vec());
 
-        let get_result = HttpServer::handle_connection(
-            &mut get_stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let get_result =
+            HttpServer::handle_connection(&mut get_stream, server.routes.clone(), 1024).await;
 
         assert!(get_result.is_ok());
         let get_response = String::from_utf8_lossy(get_stream.written_data());
@@ -304,11 +296,8 @@ mod server_tests {
         let post_request = b"POST /multi HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let mut post_stream = MockTcpStream::new(post_request.to_vec());
 
-        let post_result = HttpServer::handle_connection(
-            &mut post_stream,
-            server.routes.clone(),
-            1024
-        ).await;
+        let post_result =
+            HttpServer::handle_connection(&mut post_stream, server.routes.clone(), 1024).await;
 
         assert!(post_result.is_ok());
         let post_response = String::from_utf8_lossy(post_stream.written_data());
@@ -317,8 +306,8 @@ mod server_tests {
     }
     #[tokio::test]
     async fn test_connection_limiting() {
-        use tokio::sync::Semaphore;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Semaphore;
 
         // Create a semaphore with a small limit
         let max_connections = 2;
@@ -335,20 +324,22 @@ mod server_tests {
             let permit = match semaphore.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
-                    return Err(format!("Connection {} rejected: limit reached", connection_id));
+                    return Err(format!(
+                        "Connection {connection_id} rejected: limit reached"
+                    ));
                 }
             };
 
             // Increment active connections counter
             let count = active_connections.fetch_add(1, Ordering::SeqCst) + 1;
-            debug!("Connection {} accepted. Active connections: {}", connection_id, count);
+            debug!("Connection {connection_id} accepted. Active connections: {count}");
 
             // Simulate some work
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
             // Decrement active connections counter (permit is dropped when this function returns)
             let count = active_connections.fetch_sub(1, Ordering::SeqCst) - 1;
-            debug!("Connection {} completed. Active connections: {}", connection_id, count);
+            debug!("Connection {connection_id} completed. Active connections: {count}");
 
             // The permit is dropped here, releasing the semaphore slot
             drop(permit);
@@ -364,9 +355,10 @@ mod server_tests {
         for i in 0..max_connections {
             let semaphore_clone = semaphore.clone();
             let active_clone = active_connections.clone();
-            let handle = tokio::spawn(async move {
-                handle_connection(semaphore_clone, active_clone, i).await
-            });
+            let handle =
+                tokio::spawn(
+                    async move { handle_connection(semaphore_clone, active_clone, i).await },
+                );
             handles.push(handle);
         }
 
@@ -390,27 +382,31 @@ mod server_tests {
 
         // Verify that all initial connections succeeded
         for (i, result) in results.iter().enumerate() {
-            assert!(result.is_ok(), "Connection {} should have succeeded", i);
+            assert!(result.is_ok(), "Connection {i} should have succeeded");
         }
 
         // Verify that the extra connection was rejected
-        assert!(reject_result.is_err(), "Connection {} should have been rejected", max_connections);
-        assert!(reject_result.unwrap_err().contains("limit reached"), 
-                "Rejection message should indicate limit reached");
+        assert!(
+            reject_result.is_err(),
+            "Connection {max_connections} should have been rejected"
+        );
+        assert!(
+            reject_result.unwrap_err().contains("limit reached"),
+            "Rejection message should indicate limit reached"
+        );
 
         // Verify that no active connections remain
-        assert_eq!(active_connections.load(Ordering::SeqCst), 0, 
-                   "All connections should be completed");
+        assert_eq!(
+            active_connections.load(Ordering::SeqCst),
+            0,
+            "All connections should be completed"
+        );
     }
 
     #[tokio::test]
     async fn test_server_connection_limit_response() {
-        use tokio::sync::Semaphore;
-
         // Create a mock function that simulates the server's connection handling
-        async fn handle_connection_limit_exceeded(
-            socket: &mut MockTcpStream,
-        ) {
+        async fn handle_connection_limit_exceeded(socket: &mut MockTcpStream) {
             // Send a 503 Service Unavailable response
             let response = HttpResponse::new(StatusCode::ServiceUnavailable)
                 .with_content_type("text/plain")
@@ -455,7 +451,10 @@ mod server_tests {
         assert_eq!(default_server.config.max_connections, 1024);
 
         // Verify that the two servers have different max_connections values
-        assert_ne!(server.config.max_connections, default_server.config.max_connections);
+        assert_ne!(
+            server.config.max_connections,
+            default_server.config.max_connections
+        );
     }
 
     #[tokio::test]
@@ -477,7 +476,7 @@ mod server_tests {
                 tasks.spawn(async move {
                     // Simulate some work
                     time::sleep(Duration::from_millis(50)).await;
-                    debug!("Task {} completed", i);
+                    debug!("Task {i} completed");
                     Ok::<_, Error>(())
                 });
             }
@@ -495,7 +494,7 @@ mod server_tests {
 
             // Wait for all tasks to complete
             while let Some(res) = tasks.join_next().await {
-                assert!(res.is_ok(), "Task failed: {:?}", res);
+                assert!(res.is_ok(), "Task failed: {res:?}");
             }
 
             debug!("All tasks completed after shutdown");
@@ -505,13 +504,19 @@ mod server_tests {
         time::sleep(Duration::from_millis(10)).await;
 
         // Send shutdown signal
-        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+        shutdown_tx
+            .send(())
+            .await
+            .expect("Failed to send shutdown signal");
 
         // Wait for the server to shut down
         server_handle.await.expect("Server task failed");
 
         // Verify that shutdown was received
-        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+        assert!(
+            shutdown_received.load(Ordering::SeqCst),
+            "Shutdown signal was not received"
+        );
     }
 
     #[tokio::test]
@@ -551,7 +556,7 @@ mod server_tests {
                     active.fetch_sub(1, Ordering::SeqCst);
                     completed.fetch_add(1, Ordering::SeqCst);
 
-                    debug!("Task {} completed after {:?}", i, duration);
+                    debug!("Task {i} completed after {duration:?}");
                     Ok::<_, Error>(())
                 });
             }
@@ -569,7 +574,7 @@ mod server_tests {
 
             // Wait for all tasks to complete
             while let Some(res) = tasks.join_next().await {
-                assert!(res.is_ok(), "Task failed: {:?}", res);
+                assert!(res.is_ok(), "Task failed: {res:?}");
             }
 
             debug!("All tasks completed after shutdown");
@@ -581,21 +586,40 @@ mod server_tests {
         // Verify that some connections are active
         let active_before_shutdown = active_connections.load(Ordering::SeqCst);
         let completed_before_shutdown = completed_connections.load(Ordering::SeqCst);
-        assert!(active_before_shutdown > 0, "No active connections before shutdown");
+        assert!(
+            active_before_shutdown > 0,
+            "No active connections before shutdown"
+        );
 
         // Send shutdown signal
-        shutdown_tx.send(()).await.expect("Failed to send shutdown signal");
+        shutdown_tx
+            .send(())
+            .await
+            .expect("Failed to send shutdown signal");
 
         // Wait for the server to shut down
         server_handle.await.expect("Server task failed");
 
         // Verify that shutdown was received
-        assert!(shutdown_received.load(Ordering::SeqCst), "Shutdown signal was not received");
+        assert!(
+            shutdown_received.load(Ordering::SeqCst),
+            "Shutdown signal was not received"
+        );
 
         // Verify that all connections were completed
-        assert_eq!(active_connections.load(Ordering::SeqCst), 0, "Not all connections completed");
-        assert_eq!(completed_connections.load(Ordering::SeqCst), 5, "Not all connections were processed");
-        assert!(completed_connections.load(Ordering::SeqCst) > completed_before_shutdown, 
-                "No additional connections completed after shutdown");
+        assert_eq!(
+            active_connections.load(Ordering::SeqCst),
+            0,
+            "Not all connections completed"
+        );
+        assert_eq!(
+            completed_connections.load(Ordering::SeqCst),
+            5,
+            "Not all connections were processed"
+        );
+        assert!(
+            completed_connections.load(Ordering::SeqCst) > completed_before_shutdown,
+            "No additional connections completed after shutdown"
+        );
     }
 }

@@ -2,7 +2,6 @@
 
 use microhttp_rs::parse_request;
 use log::{info, error};
-use env_logger;
 
 fn main() {
     // Initialize the logger
@@ -20,11 +19,11 @@ fn main() {
             info!("Version: {}", request.version);
             info!("Headers:");
             for (name, value) in &request.headers {
-                info!("  {}: {}", name, value);
+                info!("  {name}: {value}");
             }
         }
         Err(err) => {
-            error!("Error parsing request: {}", err);
+            error!("Error parsing request: {err}");
         }
     }
 
@@ -36,7 +35,7 @@ fn main() {
             error!("Unexpectedly parsed invalid request!");
         }
         Err(err) => {
-            info!("Expected error parsing invalid request: {}", err);
+            info!("Expected error parsing invalid request: {err}");
         }
     }
 }

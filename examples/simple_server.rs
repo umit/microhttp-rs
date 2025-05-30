@@ -4,7 +4,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use microhttp_rs::{parse_request, ParserError};
 use log::{info, error, debug};
-use env_logger;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -17,7 +16,7 @@ async fn main() -> std::io::Result<()> {
     loop {
         // Accept incoming connections
         let (mut socket, addr) = listener.accept().await?;
-        info!("Connection from: {}", addr);
+        info!("Connection from: {addr}");
 
         // Spawn a new task for each connection
         tokio::spawn(async move {
@@ -26,7 +25,7 @@ async fn main() -> std::io::Result<()> {
             // Read data from the socket
             match socket.read(&mut buf).await {
                 Ok(n) if n > 0 => {
-                    debug!("Received {} bytes", n);
+                    debug!("Received {n} bytes");
 
                     // Parse the HTTP request
                     let response = match parse_request(&buf[..n]) {
@@ -50,18 +49,18 @@ async fn main() -> std::io::Result<()> {
                             )
                         },
                         Err(err) => {
-                            error!("Error parsing request: {}", err);
+                            error!("Error parsing request: {err}");
 
                             // Generate an error response
                             let error_message = match err {
                                 ParserError::InvalidPath => "Invalid HTTP path".to_string(),
-                                ParserError::MissingHeader(header) => format!("Required header is missing: {}", header),
+                                ParserError::MissingHeader(header) => format!("Required header is missing: {header}"),
                                 ParserError::InvalidHeaderFormat => "Invalid header format".to_string(),
-                                ParserError::InvalidMethod(method) => format!("Invalid HTTP method: {}", method),
-                                ParserError::InvalidVersion(version) => format!("Invalid HTTP version: {}", version),
-                                ParserError::MalformedRequestLine(line) => format!("Malformed request line: {}", line),
+                                ParserError::InvalidMethod(method) => format!("Invalid HTTP method: {method}"),
+                                ParserError::InvalidVersion(version) => format!("Invalid HTTP version: {version}"),
+                                ParserError::MalformedRequestLine(line) => format!("Malformed request line: {line}"),
                                 ParserError::EmptyRequest => "Empty request".to_string(),
-                                ParserError::JsonError(e) => format!("JSON parsing error: {}", e),
+                                ParserError::JsonError(e) => format!("JSON parsing error: {e}"),
                             };
 
                             format!(
@@ -78,14 +77,14 @@ async fn main() -> std::io::Result<()> {
 
                     // Write the response back to the client
                     if let Err(e) = socket.write_all(response.as_bytes()).await {
-                        error!("Error writing response: {}", e);
+                        error!("Error writing response: {e}");
                     }
                 },
                 Ok(_) => {
                     info!("Client closed connection");
                 },
                 Err(e) => {
-                    error!("Error reading from socket: {}", e);
+                    error!("Error reading from socket: {e}");
                 }
             }
         });

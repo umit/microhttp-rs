@@ -5,7 +5,6 @@ use microhttp_rs::{
 };
 use serde::{Deserialize, Serialize};
 use log::{info};
-use env_logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Ok(HttpResponse::new(StatusCode::Ok)
             .with_content_type("text/plain")
-            .with_body_string(format!("Hello, {}!", name)))
+            .with_body_string(format!("Hello, {name}!")))
     }).await;
 
     // Define data structures for JSON
@@ -64,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 HttpResponse::new(StatusCode::Ok)
                     .with_json(&data)
-                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {e}")))
             },
             Method::POST => {
                 // Process the request and return a response
@@ -74,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 HttpResponse::new(StatusCode::Created)
                     .with_json(&data)
-                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {e}")))
             },
             _ => Err(ServerError::InternalError("Unexpected method".to_string())),
         }
@@ -99,12 +98,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 HttpResponse::new(StatusCode::Created)
                     .with_json(&response)
-                    .map_err(|e| ServerError::InternalError(format!("JSON error: {}", e)))
+                    .map_err(|e| ServerError::InternalError(format!("JSON error: {e}")))
             },
             Err(e) => {
                 Ok(HttpResponse::new(StatusCode::BadRequest)
                     .with_content_type("text/plain")
-                    .with_body_string(format!("Invalid JSON: {}", e)))
+                    .with_body_string(format!("Invalid JSON: {e}")))
             }
         }
     }).await;
@@ -131,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut response_body = String::from("Request Headers:\n\n");
 
         for (name, value) in &req.headers {
-            response_body.push_str(&format!("{}: {}\n", name, value));
+            response_body.push_str(&format!("{name}: {value}\n"));
         }
 
         Ok(HttpResponse::new(StatusCode::Ok)

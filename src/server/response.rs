@@ -8,18 +8,31 @@ use crate::server::error::Error;
 /// HTTP status codes with their standard reason phrases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusCode {
+    /// 200 OK: The request has succeeded.
     Ok = 200,
+    /// 201 Created: The request has been fulfilled and a new resource has been created.
     Created = 201,
+    /// 202 Accepted: The request has been accepted for processing, but processing has not been completed.
     Accepted = 202,
+    /// 204 No Content: The server has fulfilled the request but does not need to return a response body.
     NoContent = 204,
+    /// 400 Bad Request: The server cannot process the request due to a client error.
     BadRequest = 400,
+    /// 401 Unauthorized: Authentication is required and has failed or has not been provided.
     Unauthorized = 401,
+    /// 403 Forbidden: The server understood the request but refuses to authorize it.
     Forbidden = 403,
+    /// 404 Not Found: The requested resource could not be found.
     NotFound = 404,
+    /// 405 Method Not Allowed: The request method is not supported for the requested resource.
     MethodNotAllowed = 405,
+    /// 500 Internal Server Error: The server encountered an unexpected condition.
     InternalServerError = 500,
+    /// 501 Not Implemented: The server does not support the functionality required to fulfill the request.
     NotImplemented = 501,
+    /// 502 Bad Gateway: The server received an invalid response from an upstream server.
     BadGateway = 502,
+    /// 503 Service Unavailable: The server is currently unable to handle the request.
     ServiceUnavailable = 503,
 }
 

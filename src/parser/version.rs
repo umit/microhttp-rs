@@ -8,8 +8,11 @@ use crate::parser::error::Error;
 /// Supported HTTP protocol versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpVersion {
+    /// HTTP/1.0: The first version of the HTTP protocol widely used on the web.
     Http10,
+    /// HTTP/1.1: Improved version with persistent connections, chunked transfer encoding, and more.
     Http11,
+    /// HTTP/2.0: Major revision with multiplexing, header compression, and server push capabilities.
     Http20,
 }
 

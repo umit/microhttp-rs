@@ -53,10 +53,26 @@ doc:
 .PHONY: lint
 lint:
 	@echo "Running linter..."
-	@cargo clippy -- -D warnings
+	@cargo clippy --all-targets -- \
+		-D warnings \
+		-D dead_code \
+		-D unused_imports \
+		-D unused_variables \
+		-D unused_assignments \
+		-D missing_docs \
+		-D unsafe_code \
+		-D clippy::all
 
 # Run the linter and fix issues where possible
 .PHONY: lint-fix
 lint-fix:
 	@echo "Running linter and fixing issues..."
-	@cargo clippy --fix -- -D warnings
+	@cargo clippy --fix --allow-dirty --all-targets -- \
+		-D warnings \
+		-D dead_code \
+		-D unused_imports \
+		-D unused_variables \
+		-D unused_assignments \
+		-D missing_docs \
+		-D unsafe_code \
+		-D clippy::all

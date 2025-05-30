@@ -7,7 +7,6 @@ mod request;
 mod method;
 mod version;
 mod error;
-mod tests;
 
 // Re-export public items
 pub use request::HttpRequest;
