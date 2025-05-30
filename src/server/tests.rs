@@ -9,7 +9,7 @@ mod server_tests {
     use std::task::{Context, Poll};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio::sync::{mpsc, Semaphore};
     use tokio::task::JoinSet;
     use tokio::time;
